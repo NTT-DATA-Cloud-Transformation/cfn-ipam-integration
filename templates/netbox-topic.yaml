@@ -1,0 +1,79 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  Create an SNS topic to run the Lambda function.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Function details
+        Parameters:
+          - FunctionArn
+      - Label:
+          default: Organization details
+        Parameters:
+          - PrincipalOrgID
+    ParameterLabels:
+      FunctionArn:
+        default: Function ARN
+      PrincipalOrgID:
+        default: AWS organization id
+
+Parameters:
+  FunctionArn:
+    Type: String
+    Description: >-
+      Lambda function implementing the NetBox prefix allocation
+
+  PrincipalOrgID:
+    Type: String
+    Description: >-
+      If specified, all of the accounts within the AWS organization will be
+      allowed to publish messages to the SNS topic
+    Default: ""
+
+Conditions:
+  UseOrganization: !Not [!Equals [!Ref PrincipalOrgID, ""]]
+
+Resources:
+  Topic:
+    Type: AWS::SNS::Topic
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W47  # SNS Topic should specify KmsMasterKeyId property
+            reason: Not implementing encryption for demo
+    Properties:
+      Subscription:
+        - Endpoint: !Ref FunctionArn
+          Protocol: lambda
+
+  TopicOrganizationPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Condition: UseOrganization
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F18  # SNS topic policy should not allow * principal
+            reason: Principal is restricted by the condition
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - sns:Publish
+            Resource: !Ref Topic
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref PrincipalOrgID
+      Topics:
+        - !Ref Topic
+
+Outputs:
+  TopicArn:
+    Value: !Ref Topic

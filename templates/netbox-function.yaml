@@ -1,0 +1,114 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Transform: AWS::Serverless-2016-10-31
+
+Description: >-
+  CloudFormation Custom Resource for returning CIDR blocks from a NetBox
+  service.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Function configuration
+        Parameters:
+          - SubnetIds
+          - SecurityGroupIds
+          - UrlParamName
+          - TokenParamName
+    ParameterLabels:
+      SecurityGroupIds:
+        default: Security group ids
+      SubnetIds:
+        default: Subnet ids
+      TokenParamName:
+        default: NetBox token parameter name
+      UrlParamName:
+        default: NetBox URL parameter name
+
+Parameters:
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: >-
+      List of security groups that provide access to the NetBox endpoint and
+      AWS Systems Manager Parameter Store
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      List of VPC subnets that the Lambda function may run in
+
+  TokenParamName:
+    Type: String
+    Description: >-
+      Name of the parameter in AWS Parameter Store that contains the NetBox
+      admin access token
+    Default: /NetBox/Token
+
+  UrlParamName:
+    Type: String
+    Description: >-
+      Name of the parameter in AWS Parameter Store that contains the NetBox
+      API endpoint URL
+    Default: /NetBox/URL
+
+Resources:
+  NetBoxFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: netbox_function/
+      Environment:
+        Variables:
+          PARAM_URL: !Ref UrlParamName
+          PARAM_TOKEN: !Ref TokenParamName
+      Handler: app.handler
+      Role: !GetAtt NetBoxFunctionRole.Arn
+      Runtime: python3.8
+      Timeout: 15
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Ref SubnetIds
+
+  NetBoxFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: NetBoxParameterAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter*
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${UrlParamName}"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TokenParamName}"
+
+  NetBoxFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref NetBoxFunction
+      Principal: sns.amazonaws.com
+
+Outputs:
+  NetBoxFunctionArn:
+    Description: >-
+      Function ARN used as input for the SNS topic used by the NetBox custom
+      resource function
+    Value: !GetAtt NetBoxFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-NetBoxFunctionArn"

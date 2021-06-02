@@ -1,0 +1,169 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  Create a NetBox service on an EC2 instance using the NetBox Docker
+  quickstart (https://github.com/netbox-community/netbox-docker#quickstart).
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Instance details
+        Parameters:
+          - VpcId
+          - SubnetId
+          - LatestImageId
+          - InstanceType
+          - KeyName
+          - SourceCidr
+    ParameterLabels:
+      InstanceType:
+        default: EC2 instance type
+      KeyName:
+        default: SSH key pair
+      LatestImageId:
+        default: Latest Amazon Linux 2 AMI
+      SourceCidr:
+        default: Source CIDR block
+      SubnetId:
+        default: Subnet id
+      VpcId:
+        default: VPC id
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: >-
+      (Optional) The name of an SSH key pair to allow administrative access to
+      the NetBox host.
+    Default: ""
+
+  LatestImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: >-
+      Automatically uses the recommended image id from AWS, as published in
+      Parameter Store.
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+  SourceCidr:
+    Type: String
+    Description: >-
+      A CIDR block from which the EC2 instance will accept connections.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+Conditions:
+  UseKey: !Not [!Equals [!Ref KeyName, ""]]
+
+Resources:
+  NetBoxSG:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F1000  # Missing egress rule means all traffic is allowed outbound
+    Properties:
+      GroupDescription: Allow access to the NetBox HTTP endpoint
+      SecurityGroupIngress:
+        - Description: SSH access
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SourceCidr
+        - Description: NetBox endpoint access
+          IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref SourceCidr
+      VpcId: !Ref VpcId
+
+  NetBoxInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT15M
+    Properties:
+      ImageId: !Ref LatestImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !If [UseKey, !Ref KeyName, !Ref "AWS::NoValue"]
+      SecurityGroupIds:
+        - !Ref NetBoxSG
+      SubnetId: !Ref SubnetId
+      Tags:
+        - Key: Name
+          Value: NetBox Service
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash -xe
+            yum install -y docker git
+
+            systemctl daemon-reload
+            systemctl enable docker.service
+            systemctl start docker.service
+
+            curl -sL "https://github.com/docker/compose/releases/download/1.28.5/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            chmod +x /usr/local/bin/docker-compose
+
+            # https://github.com/netbox-community/netbox-docker#quickstart
+            git clone -b release https://github.com/netbox-community/netbox-docker.git /opt/netbox
+            cd /opt/netbox
+            tee docker-compose.override.yml <<'EOT'
+            version: '3.4'
+            services:
+              netbox:
+                ports:
+                  - 8000:8080
+            EOT
+            /usr/local/bin/docker-compose pull
+
+            # Run NetBox as a service, so it will start again on boot. Note,
+            # this will be a completely fresh copy of NetBox, without any
+            # data from the previous run.
+            tee /etc/systemd/system/netbox.service <<'EOT'
+            [Unit]
+            Description=Docker Compose Application Service
+            Requires=docker.service
+            After=docker.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            WorkingDirectory=/opt/netbox
+            ExecStart=/usr/local/bin/docker-compose up -d
+            ExecStop=/usr/local/bin/docker-compose down
+            TimeoutStartSec=0
+
+            [Install]
+            WantedBy=multi-user.target
+            EOT
+
+            systemctl daemon-reload
+            systemctl enable netbox.service
+            systemctl start netbox.service
+
+            # Signal to CloudFormation that NetBox is ready.
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource NetBoxInstance --region ${AWS::Region}
+
+Outputs:
+  PrivateEndpoint:
+    Value:
+      Fn::Sub:
+        - "http://${DnsName}:8000/"
+        - DnsName: !GetAtt NetBoxInstance.PrivateDnsName
+
+  PublicEndpoint:
+    Value:
+      Fn::Sub:
+        - "http://${DnsName}:8000/"
+        - DnsName: !GetAtt NetBoxInstance.PublicDnsName

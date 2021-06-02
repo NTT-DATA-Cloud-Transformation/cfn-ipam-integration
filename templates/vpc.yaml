@@ -1,0 +1,200 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  Demonstrate the use of a CloudFormation custom resource to obtain VPC CIDR
+  blocks from an existing IPAM service.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC details
+        Parameters:
+          - ParentPrefix
+          - SubnetCount
+          - SubnetBlockSize
+          - VpcBlockSize
+      - Label:
+          default: IPAM connection
+        Parameters:
+          - TopicArn
+    ParameterLabels:
+      ParentPrefix:
+        default: Parent prefix
+      SubnetCount:
+        default: Number of subnets
+      SubnetBlockSize:
+        default: Subnet block size
+      TopicArn:
+        default: SNS topic ARN
+      VpcBlockSize:
+        default: VPC block size
+
+Parameters:
+  ParentPrefix:
+    Type: String
+    Description: >-
+      Prefix under which the VPC CIDR block will be allocated (e.g.,
+      10.0.0.0/8)
+    AllowedPattern:
+      '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    ConstraintDescription: Must be a valid CIDR block.
+
+  SubnetBlockSize:
+    Type: Number
+    Default: 24
+
+  SubnetCount:
+    Type: Number
+    Description: >-
+      Specify 2 or 3 subnets to create in separate availability zones
+    AllowedValues:
+      - 2
+      - 3
+    Default: 2
+
+  TopicArn:
+    Type: String
+    Description: >-
+      SNS topic linking to the IPAM service
+
+  VpcBlockSize:
+    Type: Number
+    Default: 16
+
+Conditions:
+  Is3Zone: !Equals [!Ref SubnetCount, 3]
+
+Resources:
+  # The Name property passed to the VPC and each subnet will be used to name
+  # the attributes of the resource. For example,
+  #
+  #     !GetAtt Prefix.VPC.CidrBlock
+
+  Prefix:
+    Type: Custom::PrefixAllocator
+    Properties:
+      ServiceToken: !Ref TopicArn
+      ParentPrefix: !Ref ParentPrefix
+      VPC:
+        Name: VPC
+        BlockSize: !Ref VpcBlockSize
+      Subnets:
+        - Name: PublicSubnet0
+          BlockSize: !Ref SubnetBlockSize
+        - Name: PublicSubnet1
+          BlockSize: !Ref SubnetBlockSize
+        - Name: PublicSubnet2
+          BlockSize: !Ref SubnetBlockSize
+        - Name: PrivateSubnet0
+          BlockSize: !Ref SubnetBlockSize
+        - Name: PrivateSubnet1
+          BlockSize: !Ref SubnetBlockSize
+        - Name: PrivateSubnet2
+          BlockSize: !Ref SubnetBlockSize
+        - Name: ProtectedSubnet0
+          BlockSize: !Ref SubnetBlockSize
+        - Name: ProtectedSubnet1
+          BlockSize: !Ref SubnetBlockSize
+        - Name: ProtectedSubnet2
+          BlockSize: !Ref SubnetBlockSize
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !GetAtt Prefix.VPC.CidrBlock
+
+  PublicSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.PublicSubnet0.CidrBlock
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.PublicSubnet1.CidrBlock
+      VpcId: !Ref VPC
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: Is3Zone
+    Properties:
+      AvailabilityZone: !Select [2, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.PublicSubnet2.CidrBlock
+      VpcId: !Ref VPC
+
+  PrivateSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.PrivateSubnet0.CidrBlock
+      VpcId: !Ref VPC
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.PrivateSubnet1.CidrBlock
+      VpcId: !Ref VPC
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: Is3Zone
+    Properties:
+      AvailabilityZone: !Select [2, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.PrivateSubnet2.CidrBlock
+      VpcId: !Ref VPC
+
+  ProtectedSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.ProtectedSubnet0.CidrBlock
+      VpcId: !Ref VPC
+
+  ProtectedSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.ProtectedSubnet1.CidrBlock
+      VpcId: !Ref VPC
+
+  ProtectedSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: Is3Zone
+    Properties:
+      AvailabilityZone: !Select [2, {"Fn::GetAZs": !Ref "AWS::Region"}]
+      CidrBlock: !GetAtt Prefix.ProtectedSubnet2.CidrBlock
+      VpcId: !Ref VPC
+
+Outputs:
+  VpcCidrBlock:
+    Value: !GetAtt Prefix.VPC.CidrBlock
+
+  PublicSubnet0CidrBlock:
+    Value: !GetAtt Prefix.PublicSubnet0.CidrBlock
+  PublicSubnet1CidrBlock:
+    Value: !GetAtt Prefix.PublicSubnet1.CidrBlock
+  PublicSubnet2CidrBlock:
+    Value: !GetAtt Prefix.PublicSubnet2.CidrBlock
+    Condition: Is3Zone
+
+  PrivateSubnet0CidrBlock:
+    Value: !GetAtt Prefix.PrivateSubnet0.CidrBlock
+  PrivateSubnet1CidrBlock:
+    Value: !GetAtt Prefix.PrivateSubnet1.CidrBlock
+  PrivateSubnet2CidrBlock:
+    Value: !GetAtt Prefix.PrivateSubnet2.CidrBlock
+    Condition: Is3Zone
+
+  ProtectedSubnet0CidrBlock:
+    Value: !GetAtt Prefix.ProtectedSubnet0.CidrBlock
+  ProtectedSubnet1CidrBlock:
+    Value: !GetAtt Prefix.ProtectedSubnet1.CidrBlock
+  ProtectedSubnet2CidrBlock:
+    Value: !GetAtt Prefix.ProtectedSubnet2.CidrBlock
+    Condition: Is3Zone
